@@ -3,14 +3,6 @@ CNN Pipeline Runner + Predicción en vivo
 TP Final — Aprendizaje Automático · Radiografías Veterinarias
 """
 import os
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-
-try:
-    import tensorflow as _tf
-    TF_AVAILABLE = True
-except ImportError:
-    TF_AVAILABLE = False
 
 import streamlit as st
 from pathlib import Path
@@ -302,10 +294,8 @@ def execute_nb(i, base_dir, mock, log_ph):
 # ─── Model loader (cached) ────────────────────────────────────────────────────
 @st.cache_resource(show_spinner="Cargando modelo …")
 def load_model(path: str):
-    if not TF_AVAILABLE:
-        raise ImportError("TensorFlow no está instalado en este entorno.")
-    import tensorflow as tf
-    return tf.keras.models.load_model(path)
+    import onnxruntime as ort
+    return ort.InferenceSession(path)
 
 # ─── Predict ──────────────────────────────────────────────────────────────────
 def predict(model, image_bytes):
@@ -313,8 +303,9 @@ def predict(model, image_bytes):
     from PIL import Image
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB").resize(IMG_SIZE)
     arr = np.array(img, dtype=np.float32)
-    arr = np.expand_dims(arr, 0)               # (1, 224, 224, 3)
-    probs = model.predict(arr, verbose=0)[0]   # shape (2,)
+    arr = np.expand_dims(arr, 0)                             # (1, 224, 224, 3)
+    input_name = model.get_inputs()[0].name
+    probs = model.run(None, {input_name: arr})[0][0]         # shape (2,)
     idx = int(probs.argmax())
     return CLASS_NAMES[idx], float(probs[idx]), probs.tolist()
 
@@ -347,51 +338,41 @@ tab_pipeline, tab_viewer, tab_pred, tab_pres = st.tabs([
 # TAB 1 — PREDICCIÓN
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_pred:
-    if not TF_AVAILABLE:
-        st.warning(
-            "**TensorFlow no está disponible en este entorno.**\n\n"
-            "La predicción en vivo requiere ejecutar la app **localmente** con el venv `caece-mineria` "
-            "y el modelo `transfer_mobilenetv2.keras` descargado de Google Drive en la carpeta `modelos/`.\n\n"
-            "En Streamlit Cloud solo están disponibles el **Pipeline Runner** y la **Presentación**.",
-            icon="⚠️",
-        )
-    else:
-        st.markdown("""
+    st.markdown("""
     <p style="color:#8b949e;margin-bottom:1.2rem;">
-      Cargá un modelo entrenado (<code>.keras</code> / <code>.h5</code>) y subí una radiografía para obtener la predicción.
+      Cargá un modelo entrenado (<code>.onnx</code>) y subí una radiografía para obtener la predicción.
     </p>
     """, unsafe_allow_html=True)
 
-        # ── Model selector ────────────────────────────────────────────────────────
-        # Buscar automáticamente modelos en subdirectorios comunes
-        default_model_dirs = [
-            NOTEBOOK_DIR / "modelos",
-            NOTEBOOK_DIR / "models",
-            NOTEBOOK_DIR,
-        ]
-        found_models = []
-        for d in default_model_dirs:
-            found_models += list(d.glob("*.keras")) + list(d.glob("*.h5"))
-        found_models = sorted(set(found_models))
-    
-        col_model, col_btn = st.columns([5, 1])
-        with col_model:
-            if found_models:
-                model_options = {p.name: str(p) for p in found_models}
-                model_options["📂 Otra ruta…"] = "__custom__"
-                sel = st.selectbox("Modelo", options=list(model_options.keys()),
-                                   label_visibility="visible")
-                if model_options[sel] == "__custom__":
-                    model_path = st.text_input("Ruta completa al archivo del modelo:",
-                                               placeholder=r"C:\ruta\al\modelo.keras")
-                else:
-                    model_path = model_options[sel]
+    # ── Model selector ────────────────────────────────────────────────────────
+    default_model_dirs = [
+        NOTEBOOK_DIR / "modelos",
+        NOTEBOOK_DIR / "models",
+        NOTEBOOK_DIR,
+    ]
+    found_models = []
+    for d in default_model_dirs:
+        found_models += list(d.glob("*.onnx"))
+    found_models = sorted(set(found_models))
+
+    col_model, col_btn = st.columns([5, 1])
+    with col_model:
+        if found_models:
+            model_options = {p.name: str(p) for p in found_models}
+            model_options["📂 Otra ruta…"] = "__custom__"
+            sel = st.selectbox("Modelo", options=list(model_options.keys()),
+                               label_visibility="visible")
+            if model_options[sel] == "__custom__":
+                model_path = st.text_input("Ruta completa al archivo del modelo:",
+                                           placeholder=r"C:\ruta\al\modelo.onnx")
             else:
-                model_path = st.text_input(
-                    "Ruta al modelo entrenado (`.keras` o `.h5`):",
-                    placeholder=r"C:\ruta\al\modelo.keras",
-                    help="Descargá el modelo desde Google Drive y pegá la ruta local aquí.",
-                )
+                model_path = model_options[sel]
+        else:
+            model_path = st.text_input(
+                "Ruta al modelo ONNX (`.onnx`):",
+                placeholder=r"C:\ruta\al\modelo.onnx",
+                help="Copiá el archivo transfer_mobilenetv2.onnx en la carpeta modelos/.",
+            )
     
         with col_btn:
             st.markdown("<div style='height:27px'></div>", unsafe_allow_html=True)
